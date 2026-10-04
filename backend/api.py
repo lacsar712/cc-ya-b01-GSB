@@ -8,6 +8,7 @@ from passlib.context import CryptContext
 from quart import Quart, jsonify, request
 
 from db import SCHEMA, connect
+from drift import fit_slope_deg_per_hour
 from rules import judge
 
 SECRET = os.environ.get("JWT_SECRET", "yaw-align-dev-secret")
@@ -185,3 +186,69 @@ async def create_log(user):
 
     row = await run_db(insert)
     return jsonify(row), 201
+
+
+DEFAULT_WINDOW_MINUTES = 60.0
+MAX_WINDOW_MINUTES = 24.0 * 60.0
+
+
+@app.get("/api/drift/slope")
+@require_login
+async def drift_slope(user):
+    """偏航漂移斜率台：逐机列出窗内样本点与后台拟合斜率（度/小时）。
+
+    斜率只能由后台按办结时刻拟合得出；尚未办结的记录不入样本。
+    """
+    raw = request.args.get("window_minutes")
+    try:
+        window_minutes = float(raw) if raw is not None else DEFAULT_WINDOW_MINUTES
+    except (TypeError, ValueError):
+        return jsonify({"detail": "window_minutes 必须是数字"}), 400
+    if window_minutes < 0 or window_minutes > MAX_WINDOW_MINUTES:
+        return jsonify({"detail": "window_minutes 须在 0 到 1440 分钟之间"}), 400
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=window_minutes)
+
+    def query():
+        with connect() as conn:
+            return conn.execute(
+                """SELECT turbine_code, yaw_err_deg, processed_at
+                   FROM yaw_logs
+                   WHERE status = 'done' AND processed_at IS NOT NULL
+                   ORDER BY turbine_code, processed_at, id"""
+            ).fetchall()
+
+    rows = await run_db(query)
+    grouped: dict[str, list] = {}
+    for row in rows:
+        grouped.setdefault(row["turbine_code"], []).append(row)
+
+    turbines = []
+    for code in sorted(grouped):
+        in_window = [r for r in grouped[code] if r["processed_at"] >= cutoff]
+        slope = fit_slope_deg_per_hour(
+            [(r["processed_at"], r["yaw_err_deg"]) for r in in_window]
+        )
+        turbines.append(
+            {
+                "turbine_code": code,
+                "slope_deg_per_hour": slope,
+                "sample_count": len(in_window),
+                "samples": [
+                    {
+                        "processed_at": r["processed_at"].isoformat(),
+                        "yaw_err_deg": r["yaw_err_deg"],
+                    }
+                    for r in in_window
+                ],
+            }
+        )
+
+    return jsonify(
+        {
+            "window_minutes": window_minutes,
+            "generated_at": now.isoformat(),
+            "turbines": turbines,
+        }
+    )

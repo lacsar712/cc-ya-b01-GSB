@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    "noEmit": true,
     "skipLibCheck": true,
     "experimentalDecorators": true,
     "useDefineForClassFields": false,

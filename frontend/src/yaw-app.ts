@@ -1,5 +1,6 @@
 import { css, html, LitElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
+import "./drift-page";
 
 type LogRow = {
   id: number;
@@ -34,6 +35,41 @@ export class YawAlignApp extends LitElement {
       margin: 0 0 0.25rem;
       font-size: 1.75rem;
       color: #38bdf8;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 0.6rem 1rem;
+      margin-bottom: 1rem;
+    }
+    .topbar .brand {
+      font-weight: 700;
+      color: #38bdf8;
+      margin-right: 0.75rem;
+      white-space: nowrap;
+    }
+    .topbar .grow {
+      flex: 1;
+    }
+    .topbar .who {
+      color: #94a3b8;
+      font-size: 0.85rem;
+      white-space: nowrap;
+    }
+    button.nav {
+      background: transparent;
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      font-weight: 600;
+    }
+    button.nav.active {
+      background: #0284c7;
+      border-color: #0284c7;
+      color: #fff;
     }
     .sub {
       color: #94a3b8;
@@ -125,6 +161,7 @@ export class YawAlignApp extends LitElement {
 
   @state() private session: Session | null = null;
   @state() private logs: LogRow[] = [];
+  @state() private page: "logs" | "drift" = "logs";
   @state() private loginUser = "technician";
   @state() private loginPass = "tech123456";
   @state() private turbineCode = "";
@@ -281,15 +318,41 @@ export class YawAlignApp extends LitElement {
       `;
     }
 
+    const session = this.session;
     return html`
-      <h1>风机偏航对中台</h1>
-      <p class="sub">
-        已登录：${this.session.username}
-        (${this.isWriter ? "可提交" : "只读"})
-      </p>
+      <nav class="topbar">
+        <span class="brand">风机偏航对中台</span>
+        <button
+          class="nav ${this.page === "logs" ? "active" : ""}"
+          @click=${() => (this.page = "logs")}
+        >
+          对中记录
+        </button>
+        <button
+          class="nav ${this.page === "drift" ? "active" : ""}"
+          @click=${() => (this.page = "drift")}
+        >
+          偏航漂移斜率台
+        </button>
+        <span class="grow"></span>
+        <span class="who">
+          ${session.username}（${this.isWriter ? "技师·可提交" : "观察员·只读"}）
+        </span>
+        <button class="secondary" @click=${this.logout}>退出</button>
+      </nav>
+      ${this.page === "drift"
+        ? html`<yaw-drift-page
+            .token=${session.token}
+            .role=${session.role}
+          ></yaw-drift-page>`
+        : this.renderLogsPage()}
+    `;
+  }
+
+  private renderLogsPage() {
+    return html`
       <section>
         <div class="row-actions">
-          <button class="secondary" @click=${this.logout}>退出</button>
           <button class="secondary" ?disabled=${this.loading} @click=${this.refreshLogs}>
             刷新列表
           </button>
