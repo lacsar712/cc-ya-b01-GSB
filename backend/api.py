@@ -8,6 +8,14 @@ from passlib.context import CryptContext
 from quart import Quart, jsonify, request
 
 from db import SCHEMA, connect
+from drift import (
+    DEFAULT_WINDOW_SECONDS,
+    MAX_WINDOW_SECONDS,
+    MIN_WINDOW_SECONDS,
+    current_window_seconds,
+    refit_all,
+    snapshot,
+)
 from rules import judge
 
 SECRET = os.environ.get("JWT_SECRET", "yaw-align-dev-secret")
@@ -56,12 +64,34 @@ def seed_if_empty(conn):
             (code, err, verdict, reason, "technician", now, now),
         )
 
+    # W02：三条办结时刻等间隔、误差水平的历史点。24h 窗内三点拟合斜率为 0（平），
+    # 用于交班前对照「正在漂 / 没有漂」。
+    flat_yaw = 0.2
+    flat_verdict, flat_reason = judge(flat_yaw)
+    for hours_ago in (12, 6, 1):
+        ts = now - timedelta(hours=hours_ago)
+        conn.execute(
+            """INSERT INTO yaw_logs
+               (turbine_code, yaw_err_deg, status, verdict, reason,
+                created_by, created_at, processed_at)
+               VALUES (%s, %s, 'done', %s, %s, %s, %s, %s)""",
+            ("W02", flat_yaw, flat_verdict, flat_reason, "technician", ts, ts),
+        )
+
+    # 首次后台拟合，串「办结时刻」链路：种子点已是 done，直接进入样本。
+    refit_all(conn, DEFAULT_WINDOW_SECONDS, now=now)
+
 
 @app.before_serving
 async def startup():
     def init():
         with connect() as conn:
             seed_if_empty(conn)
+            if conn.execute(
+                "SELECT 1 FROM drift_settings WHERE id = 1"
+            ).fetchone() is None:
+                # 旧库（已有办结点但从未拟合）启动时补一次后台拟合
+                refit_all(conn, current_window_seconds(conn))
             conn.commit()
 
     await run_db(init)
@@ -185,3 +215,43 @@ async def create_log(user):
 
     row = await run_db(insert)
     return jsonify(row), 201
+
+
+@app.get("/api/drift/slopes")
+@require_login
+async def drift_slopes(user):
+    def query():
+        with connect() as conn:
+            return snapshot(conn)
+
+    snap = await run_db(query)
+    if snap is None:
+        return jsonify({"detail": "尚未进行后台拟合"}), 409
+    return jsonify(snap)
+
+
+@app.post("/api/drift/refit")
+@require_writer
+async def drift_refit(user):
+    body = await request.get_json(force=True, silent=True) or {}
+
+    raw = body.get("window_seconds", DEFAULT_WINDOW_SECONDS)
+    if isinstance(raw, bool):
+        return jsonify({"detail": "窗宽必须是整数秒"}), 400
+    try:
+        window_seconds = int(raw)
+    except (TypeError, ValueError):
+        return jsonify({"detail": "窗宽必须是整数秒"}), 400
+    if not (MIN_WINDOW_SECONDS <= window_seconds <= MAX_WINDOW_SECONDS):
+        return jsonify(
+            {"detail": f"窗宽需在 {MIN_WINDOW_SECONDS}~{MAX_WINDOW_SECONDS} 秒之间"}
+        ), 400
+
+    def fit():
+        with connect() as conn:
+            result = refit_all(conn, window_seconds)
+            conn.commit()
+            return result
+
+    snap = await run_db(fit)
+    return jsonify(snap)

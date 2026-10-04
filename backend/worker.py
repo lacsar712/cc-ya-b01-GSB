@@ -1,4 +1,8 @@
-"""后台 worker：用 SKIP LOCKED 认领 pending 记录并写入判定结论。"""
+"""后台 worker：用 SKIP LOCKED 认领 pending 记录并写入判定结论。
+
+每条记录办结（写入 processed_at）后，在同一事务内按当前窗宽重建偏航漂移
+斜率——斜率只能由此后台拟合产出，前端没有任何手填斜率的入口。
+"""
 
 import os
 import time
@@ -8,6 +12,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from db import SCHEMA, connect
+from drift import current_window_seconds, refit_all
 from rules import judge
 
 POLL_SEC = float(os.environ.get("WORKER_POLL_SEC", "0.5"))
@@ -39,6 +44,8 @@ def claim_and_process(conn) -> bool:
                WHERE id = %s""",
             (verdict, reason, now, row["id"]),
         )
+        # 办结即拟合：用该办结时刻所属的当前窗宽重建全部机组斜率。
+        refit_all(conn, current_window_seconds(conn), now=now)
     return True
 
 

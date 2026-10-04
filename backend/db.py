@@ -3,6 +3,8 @@ import os
 import psycopg
 from psycopg.rows import dict_row
 
+from drift import DRIFT_SCHEMA
+
 DSN = os.environ.get(
     "DATABASE_URL",
     "postgresql://app:app@localhost:54399/yawalign",
@@ -25,4 +27,5 @@ CREATE TABLE IF NOT EXISTS yaw_logs (
     created_at timestamptz NOT NULL,
     processed_at timestamptz
 );
-"""
+""" + DRIFT_SCHEMA
+
